@@ -2,7 +2,7 @@
 
 import time
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from atproto import Client as AtprotoClient
 
@@ -38,7 +38,22 @@ def insert_post(conn: sqlite3.Connection, cursor, post, keyword: str, category: 
     """Insert a post (post is an atproto model object, not a dict)."""
     emoji = CATEGORY_EMOJI.get(category, "🏷️")
     tags = f"{emoji} {category}"
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        record_created_at = post.record.created_at
+    except AttributeError:
+        record_created_at = now
+
+    try:
+        record_text = post.record.text
+    except AttributeError:
+        record_text = ""
+
+    try:
+        author_handle = post.author.handle
+    except AttributeError:
+        author_handle = ""
 
     cursor.execute("""
         INSERT OR IGNORE INTO posts
@@ -48,13 +63,13 @@ def insert_post(conn: sqlite3.Connection, cursor, post, keyword: str, category: 
         post.uri,
         post.cid,
         post.author.did,
-        getattr(post.author, 'handle', ''),
-        post.record.text if hasattr(post.record, 'text') else '',
-        getattr(post.record, 'created_at', now) if hasattr(post.record, 'created_at') else now,
+        author_handle,
+        record_text,
+        record_created_at,
         now,
         tags,
         keyword,
-        1.0,  # base relevance
+        1.0,
     ))
     return cursor.rowcount > 0
 
@@ -67,7 +82,7 @@ def search_keyword(client: AtprotoClient, keyword: str, category: str, seen_uris
     for page in range(3):  # up to 3 pages per keyword
         try:
             response = client.app.bsky.feed.search_posts(
-                {'q': keyword, 'limit': 25, 'cursor': cursor_param}
+                {"q": keyword, "limit": 25, "cursor": cursor_param}
             )
         except Exception as e:
             print(f"  [!] search_posts failed for '{keyword}': {e}")
@@ -119,7 +134,9 @@ def run_scraper(bluesky_handle: Optional[str] = None, bluesky_password: Optional
                 if insert_post(conn, cursor, post, keyword, category):
                     inserted += 1
                     new_count += 1
-            print(f"    → {inserted} new posts (total collected: {len(posts)})")
+                    seen_uris.add(post.uri)
+            conn.commit()
+            print(f"    → {inserted} new posts (total: {len(posts)})")
             time.sleep(1)
 
     conn.close()
